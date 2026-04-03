@@ -310,4 +310,6 @@ app.get("/", (req, res) => {
 </html>`);
 });
 
-app.listen(3000, () => console.log("Running at http://localhost:3000"));
+// app.listen(3000, () => console.log("Running at http://localhost:3000"));
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Server běží na portu ${port}`));
