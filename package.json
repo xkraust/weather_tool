@@ -1,13 +1,13 @@
 {
   "name": "rosnicka",
   "version": "1.0.0",
-  "type": "module",          // ← TOTO JE DŮLEŽITÉ!
+  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "@anthropic-ai/sdk": "^0.XX.X",   // aktuální verze
-    "dotenv": "^16.4.5"
+    "express": "^4.21.0",
+    "@anthropic-ai/sdk": "^0.39.0",
+    "dotenv": "^16.4.7"
   }
 }
