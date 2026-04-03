@@ -38,14 +38,37 @@ async function get_weather(location) {
   };
 }
 
+// --- Tools ---
 const tools = [
   {
     name: "get_weather",
-    description: "Zjisti aktuální počasí pro zadanou lokaci.",
+    description: "Zjisti aktuální počasí pro zadanou lokaci. Odpovídej jednoduše, bez přehnaného Markdown formátování.",
     input_schema: {
       type: "object",
       properties: {
-        location: { type: "string", description: "Město a země, např. Praha, CZ" }
+        location: { 
+          type: "string", 
+          description: "Město a země, např. Praha, CZ nebo New York, USA" 
+        }
+      },
+      required: ["location"]
+    }
+  },
+  {
+    name: "suggest_forecast",
+    description: "Po zobrazení aktuálního počasí navrhni uživateli, zda ho nezajímá předpověď počasí na další dny pro stejnou lokaci.",
+    input_schema: {
+      type: "object",
+      properties: {
+        location: { 
+          type: "string", 
+          description: "Lokace, pro kterou jsme ukázali aktuální počasí" 
+        },
+        days: { 
+          type: "number", 
+          description: "Počet dní předpovědi (obvykle 3)", 
+          default: 3 
+        }
       },
       required: ["location"]
     }
@@ -53,51 +76,92 @@ const tools = [
 ];
 
 async function runTool(name, input) {
-  if (name === "get_weather") return await get_weather(input.location);
+  if (name === "get_weather") {
+    return await get_weather(input.location);
+  }
+  
+  if (name === "suggest_forecast") {
+    return {
+      message: `Chceš předpověď počasí pro ${input.location} na příštích ${input.days || 3} dní?`,
+      location: input.location,
+      days: input.days || 3
+    };
+  }
+  
   throw new Error(`Unknown tool: ${name}`);
 }
 
 // --- Chat endpoint ---
-
 app.post("/chat", async (req, res) => {
-  const { message, history } = req.body;
-  const messages = [...(history || []), { role: "user", content: message }];
+  const { message, history = [] } = req.body;
+  let messages = [...history, { role: "user", content: message }];
+
+  const toolCalls = [];   // pro frontend
+  const collectedTexts = [];  // sbíráme text ze všech odpovědí v loopu
 
   try {
-    let response = await anthropic.messages.create({
-      model: "claude-opus-4-6",
-      max_tokens: 1024,
-      tools,
-      messages
-    });
+    let response;
 
-    const toolCalls = [];
-
-    while (response.stop_reason === "tool_use") {
-      const toolUseBlock = response.content.find(b => b.type === "tool_use");
-      const toolResult = await runTool(toolUseBlock.name, toolUseBlock.input);
-
-      toolCalls.push({ tool: toolUseBlock.name, input: toolUseBlock.input, result: toolResult });
-
-      messages.push({ role: "assistant", content: response.content });
-      messages.push({
-        role: "user",
-        content: [{ type: "tool_result", tool_use_id: toolUseBlock.id, content: JSON.stringify(toolResult) }]
-      });
-
+    // Agentic loop - opakujeme, dokud Claude nechce tool
+    while (true) {
       response = await anthropic.messages.create({
-        model: "claude-opus-4-6",
+        model: "claude-opus-4-6",   // nebo sonnet, pokud chceš levnější
         max_tokens: 1024,
+        system: "Pokud v odpovědi nabízíš předpověď počasí, odděl ji od informací o aktuálním počasí prázdným řádkem.",
         tools,
         messages
       });
+
+      // Sesbíráme text z této odpovědi (může být i uprostřed loopu)
+      const textBlock = response.content.find(b => b.type === "text");
+      if (textBlock?.text) collectedTexts.push(textBlock.text);
+
+      // Pokud už není tool_use → máme finální odpověď
+      if (response.stop_reason !== "tool_use") {
+        break;
+      }
+
+      // Přidáme asistenta s tool_use do historie (jen jednou)
+      messages.push({ role: "assistant", content: response.content });
+
+      // Zpracujeme tool call(y) a sesbíráme výsledky
+      const toolResults = [];
+      for (const contentBlock of response.content) {
+        if (contentBlock.type === "tool_use") {
+          const toolResult = await runTool(contentBlock.name, contentBlock.input);
+
+          toolCalls.push({
+            tool: contentBlock.name,
+            input: contentBlock.input,
+            result: toolResult
+          });
+
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: contentBlock.id,
+            content: JSON.stringify(toolResult)
+          });
+        }
+      }
+
+      // Všechny výsledky přidáme v jediné user zprávě
+      messages.push({ role: "user", content: toolResults });
     }
 
-    const assistantText = response.content.find(b => b.type === "text")?.text ?? "";
+    // Finální textová odpověď – spojíme veškerý text ze všech iterací
+    const assistantText = collectedTexts.join("\n\n");
+
+    // Přidáme finální odpověď do historie
     messages.push({ role: "assistant", content: assistantText });
 
-    res.json({ reply: assistantText, history: messages, toolCalls });
+    res.json({ 
+      reply: assistantText, 
+      history: messages, 
+      toolCalls 
+    });
+
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -244,19 +308,51 @@ app.get("/", (req, res) => {
     const inputEl = document.getElementById("input");
     const sendBtn = document.getElementById("send");
 
-    function addMessage(role, text) {
-      const div = document.createElement("div");
-      div.className = "message " + role;
-      div.textContent = text;
-      messagesEl.appendChild(div);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-      return div;
+  function addMessage(role, text) {
+    const div = document.createElement("div");
+    div.className = "message " + role;
+
+    // Jednoduchý Markdown parser pro **tučné** a *kurzívu*
+    let formattedText = text
+      .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')   // **tučné**
+      .replace(/\\*(.+?)\\*/g, '<em>$1</em>')             // *kurzíva*
+      .replace(/\\n\\n/g, '</p><p>')                       // odstavce
+      .replace(/\\n/g, '<br>');                            // nové řádky
+    formattedText = '<p style="margin:0">' + formattedText + '</p>';
+
+    // Základní podpora pro tabulky (velmi jednoduchá verze)
+    if (formattedText.includes('|') && formattedText.includes('---')) {
+      formattedText = '<div style="overflow-x:auto;"><table style="border-collapse:collapse; width:100%; margin:10px 0;">' +
+                      formattedText
+                        .replace(/\\|---.*?\\|/gs, '')  // odstraníme separator řádek
+                        .replace(/^\\|(.+?)\\|$/gm, (match, content) => {
+                          const cells = content.split('|').map(cell =>
+                            '<td style="border:1px solid #e5e7eb; padding:8px;">' + cell.trim() + '</td>'
+                          ).join('');
+                          return '<tr>' + cells + '</tr>';
+                        }) +
+                      '</table></div>';
     }
+
+    div.innerHTML = formattedText;   // ← změna z textContent na innerHTML
+
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return div;
+  }
 
     function addToolBadge(toolName, location) {
       const div = document.createElement("div");
       div.className = "tool-badge";
-      div.textContent = "🔧 Zavolal jsem nástroj " + toolName + " pro " + location;
+      
+      if (toolName === "suggest_forecast") {
+        div.style.background = "#fef3c7";
+        div.style.color = "#92400e";
+        div.textContent = "💡 Chceš předpověď počasí pro " + location + " na další dny?";
+      } else {
+        div.textContent = "🔧 Zavolal jsem nástroj " + toolName + " pro " + location;
+      }
+      
       messagesEl.appendChild(div);
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
@@ -267,6 +363,7 @@ app.get("/", (req, res) => {
 
       inputEl.value = "";
       sendBtn.disabled = true;
+
       addMessage("user", text);
 
       const typingEl = document.createElement("div");
@@ -286,17 +383,21 @@ app.get("/", (req, res) => {
         typingEl.remove();
 
         if (data.error) {
-          addMessage("assistant", "Error: " + data.error);
+          addMessage("assistant", "Chyba: " + data.error);
         } else {
+          // Zobraz tool badges
           if (data.toolCalls?.length) {
-            data.toolCalls.forEach(tc => addToolBadge(tc.tool, tc.input.location));
+            data.toolCalls.forEach(tc => {
+              addToolBadge(tc.tool, tc.input?.location || "");
+            });
           }
           addMessage("assistant", data.reply);
           history = data.history;
         }
       } catch (err) {
         typingEl.remove();
-        addMessage("assistant", "Network error: " + err.message);
+        addMessage("assistant", "Chyba připojení: " + err.message);
+        console.error(err);
       }
 
       sendBtn.disabled = false;
