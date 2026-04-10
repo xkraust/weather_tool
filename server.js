@@ -411,6 +411,6 @@ app.get("/", (req, res) => {
 </html>`);
 });
 
-// app.listen(3000, () => console.log("Running at http://localhost:3000"));
+app.listen(process.env.PORT || 8080, () => console.log("Running on port " + (process.env.PORT || 8080)));
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Server běží na portu ${port}`));
