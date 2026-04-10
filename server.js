@@ -412,5 +412,3 @@ app.get("/", (req, res) => {
 });
 
 app.listen(process.env.PORT || 8080, () => console.log("Running on port " + (process.env.PORT || 8080)));
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Server běží na portu ${port}`));
