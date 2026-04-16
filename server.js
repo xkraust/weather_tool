@@ -308,12 +308,17 @@ app.get("/", (req, res) => {
     const inputEl = document.getElementById("input");
     const sendBtn = document.getElementById("send");
 
+  function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
   function addMessage(role, text) {
     const div = document.createElement("div");
     div.className = "message " + role;
 
     // Jednoduchý Markdown parser pro **tučné** a *kurzívu*
-    let formattedText = text
+    let formattedText = escapeHtml(text)
       .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')   // **tučné**
       .replace(/\\*(.+?)\\*/g, '<em>$1</em>')             // *kurzíva*
       .replace(/\\n\\n/g, '</p><p>')                       // odstavce
